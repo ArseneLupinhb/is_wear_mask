@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import shutil
 import zipfile
 
 import matplotlib.pyplot as plt
@@ -16,12 +17,13 @@ train_parameters = {
 	"input_size": [3, 224, 224],  # 输入图片的shape
 	"class_dim": -1,  # 分类数
 	"src_path": "data/maskDetect.zip",  # 原始数据集路径
+	"src_wuda_path": "data/self-built-masked-face-recognition-dataset.zip",  # 原始数据集路径
 	"target_path": "data/",  # 要解压的路径
 	"train_list_path": "data/train.txt",  # train.txt路径
 	"eval_list_path": "data/eval.txt",  # eval.txt路径
 	"readme_path": "data/readme.json",  # readme.json路径
 	"label_dict": {},  # 标签字典
-	"num_epochs": 10,  # 训练轮数
+	"num_epochs": 3,  # 训练轮数
 	"train_batch_size": 16,  # 训练时每个批次的大小
 	"learning_strategy": {  # 优化函数相关的配置
 		"lr": 0.001  # 超参数学习率
@@ -29,12 +31,39 @@ train_parameters = {
 }
 
 
-def unzip_data(src_path, target_path):
+def deal_wuda_mask(target_path, ):
+	new_path_maskimages = target_path + "maskDetect/maskimages"
+	new_path_nomaskimages = target_path + "maskDetect/nomaskimages"
+
+	for current_folder_name, user_names_folders, current_file_names in os.walk(
+			target_path + "self-built-masked-face-recognition-dataset/AFDB_masked_face_dataset"):
+		for user_names_folder in (user_names_folders):
+			dir_path = current_folder_name + "/" + user_names_folder
+			for sub_current_folder_name, sub_user_names_folders, sub_current_file_names in os.walk(dir_path):
+				if len(sub_current_file_names) > 0:
+					for filenames in sub_current_file_names:
+						shutil.move(sub_current_folder_name + "/" + filenames, new_path_maskimages + "/" + filenames)
+
+	for current_folder_name, user_names_folders, current_file_names in os.walk(
+			target_path + "self-built-masked-face-recognition-dataset/AFDB_face_dataset"):
+		for user_names_folder in (user_names_folders):
+			dir_path = current_folder_name + "/" + user_names_folder
+			for sub_current_folder_name, sub_user_names_folders, sub_current_file_names in os.walk(dir_path):
+				if len(sub_current_file_names) > 0:
+					for filenames in sub_current_file_names:
+						shutil.move(sub_current_folder_name + "/" + filenames, new_path_nomaskimages + "/" + filenames)
+
+
+def unzip_data(src_path, src_wuda_path, target_path):
 	'''
 	解压原始数据集，将src_path路径下的zip包解压至data目录下
 	'''
 	if (not os.path.isdir(target_path + "maskDetect")):
 		z = zipfile.ZipFile(src_path, 'r')
+		z.extractall(path=target_path)
+		z.close()
+	if (not os.path.isdir(target_path + "self-built-masked-face-recognition-dataset")):
+		z = zipfile.ZipFile(src_wuda_path, 'r')
 		z.extractall(path=target_path)
 		z.close()
 
@@ -143,6 +172,8 @@ def custom_reader(file_list):
 参数初始化
 '''
 src_path = train_parameters['src_path']
+src_wuda_path = train_parameters['src_wuda_path']
+
 target_path = train_parameters['target_path']
 train_list_path = train_parameters['train_list_path']
 eval_list_path = train_parameters['eval_list_path']
@@ -151,7 +182,8 @@ batch_size = train_parameters['train_batch_size']
 '''
 解压原始数据到指定路径
 '''
-unzip_data(src_path, target_path)
+unzip_data(src_path, src_wuda_path, target_path)
+deal_wuda_mask(target_path)
 
 '''
 划分训练集与验证集，乱序，生成数据列表
@@ -324,6 +356,7 @@ with fluid.dygraph.guard(place=fluid.CUDAPlace(0)):
 			vgg.clear_gradients()
 
 			all_train_iter = all_train_iter + train_parameters['train_batch_size']
+			print("all_train_iter", all_train_iter, train_parameters['train_batch_size'])
 			all_train_iters.append(all_train_iter)
 			all_train_costs.append(loss.numpy()[0])
 			all_train_accs.append(acc.numpy()[0])
@@ -382,30 +415,36 @@ label_dic = train_parameters['label_dict']
 '''
 模型预测
 '''
-with fluid.dygraph.guard():
-	model, _ = fluid.dygraph.load_dygraph("vgg")
-	vgg = VGGNet()
-	vgg.load_dict(model)
-	vgg.eval()
 
-	# 展示预测图片
-	infer_path = 'data/infer_mask01.jpg'
-	img = Image.open(infer_path)
-	plt.imshow(img)  # 根据数组绘制图像
-	plt.show()  # 显示图像
 
-	# 对预测图片进行预处理
-	infer_imgs = []
-	infer_imgs.append(load_image(infer_path))
-	infer_imgs = np.array(infer_imgs)
+def pre_is_wear_mask(infer_path):
+	global model, _, vgg, img, data, dy_x_data, out, lab
+	with fluid.dygraph.guard():
+		model, _ = fluid.dygraph.load_dygraph("vgg")
+		vgg = VGGNet()
+		vgg.load_dict(model)
+		vgg.eval()
 
-	for i in range(len(infer_imgs)):
-		data = infer_imgs[i]
-		dy_x_data = np.array(data).astype('float32')
-		dy_x_data = dy_x_data[np.newaxis, :, :, :]
-		img = fluid.dygraph.to_variable(dy_x_data)
-		out = vgg(img)
-		lab = np.argmax(out.numpy())  # argmax():返回最大数的索引
-		print("第{}个样本,被预测为：{}".format(i + 1, label_dic[str(lab)]))
+		# 展示预测图片
+		infer_path = 'data/infer_mask01.jpg'
+		img = Image.open(infer_path)
+		plt.imshow(img)  # 根据数组绘制图像
+		plt.show()  # 显示图像
 
-print("结束")
+		# 对预测图片进行预处理
+		infer_imgs = []
+		infer_imgs.append(load_image(infer_path))
+		infer_imgs = np.array(infer_imgs)
+
+		for i in range(len(infer_imgs)):
+			data = infer_imgs[i]
+			dy_x_data = np.array(data).astype('float32')
+			dy_x_data = dy_x_data[np.newaxis, :, :, :]
+			img = fluid.dygraph.to_variable(dy_x_data)
+			out = vgg(img)
+			lab = np.argmax(out.numpy())  # argmax():返回最大数的索引
+			print("第{}个样本,被预测为：{}".format(i + 1, label_dic[str(lab)]))
+	print("结束")
+
+
+pre_is_wear_mask('data/infer_mask01.jpg')
